@@ -460,6 +460,7 @@ impl ClaudeLogProcessor {
         match claude_json {
             ClaudeJson::System { .. } => None, // session might not have been initialized yet
             ClaudeJson::Assistant { session_id, .. } => session_id.clone(),
+            ClaudeJson::WarpAgent { conversation_id, .. } => conversation_id.clone(),
             ClaudeJson::User { session_id, .. } => session_id.clone(),
             ClaudeJson::ToolUse { session_id, .. } => session_id.clone(),
             ClaudeJson::ToolResult { session_id, .. } => session_id.clone(),
@@ -878,6 +879,22 @@ impl ClaudeLogProcessor {
                         }
                         ClaudeContentItem::ToolResult { .. } => {}
                     }
+                }
+            }
+            ClaudeJson::WarpAgent { text, .. } => {
+                // Handle Warp's simpler agent message format
+                if let Some(text) = text {
+                    
+                    let entry = NormalizedEntry {
+                        timestamp: None,
+                        entry_type: NormalizedEntryType::AssistantMessage,
+                        content: text.clone(),
+                        metadata: Some(
+                            serde_json::to_value(claude_json).unwrap_or(serde_json::Value::Null),
+                        ),
+                    };
+                    let idx = entry_index_provider.next();
+                    patches.push(ConversationPatch::add_normalized_entry(idx, entry));
                 }
             }
             ClaudeJson::User { message, .. } => {
@@ -1467,10 +1484,21 @@ pub enum ClaudeJson {
         message: ClaudeMessage,
         session_id: Option<String>,
     },
+    // Warp's simpler agent message format
+    #[serde(rename = "agent")]
+    WarpAgent {
+        #[serde(default)]
+        text: Option<String>,
+        #[serde(default)]
+        session_id: Option<String>,
+        #[serde(default)]
+        conversation_id: Option<String>,
+    },
     User {
         message: ClaudeMessage,
         session_id: Option<String>,
     },
+    #[serde(alias = "tool_call")]
     ToolUse {
         tool_name: String,
         #[serde(flatten)]
@@ -1548,7 +1576,7 @@ pub enum ClaudeContentItem {
     Text { text: String },
     #[serde(rename = "thinking")]
     Thinking { thinking: String },
-    #[serde(rename = "tool_use")]
+    #[serde(rename = "tool_use", alias = "tool_call")]
     ToolUse {
         id: String,
         #[serde(flatten)]
