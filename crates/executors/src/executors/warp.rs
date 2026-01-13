@@ -107,11 +107,25 @@ impl StandardCodingAgentExecutor for Warp {
         prompt: &str,
         env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
+        tracing::info!("Spawning Warp agent");
+        tracing::debug!(
+            "Warp config: ambient={:?}, model={:?}, profile={:?}, environment={:?}, output_format={:?}",
+            self.ambient,
+            self.model,
+            self.profile,
+            self.environment,
+            self.output_format
+        );
+
         let command_builder = self.build_command_builder();
         let command_parts = command_builder.build_initial()?;
         let (executable_path, args) = command_parts.into_resolved().await?;
 
+        tracing::debug!("Warp executable: {:?}", executable_path);
+        tracing::debug!("Warp args: {:?}", args);
+
         let combined_prompt = self.append_prompt.combine_prompt(prompt);
+        tracing::debug!("Prompt length: {} chars", combined_prompt.len());
 
         let mut command = Command::new(executable_path);
         command
@@ -127,7 +141,9 @@ impl StandardCodingAgentExecutor for Warp {
             .with_profile(&self.cmd)
             .apply_to_command(&mut command);
 
+        tracing::info!("Spawning Warp process in directory: {:?}", current_dir);
         let child = command.group_spawn()?;
+        tracing::info!("Warp process spawned successfully");
 
         Ok(child.into())
     }
@@ -136,20 +152,26 @@ impl StandardCodingAgentExecutor for Warp {
         &self,
         _current_dir: &Path,
         _prompt: &str,
-        _session_id: &str,
+        session_id: &str,
         _env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
+        tracing::warn!(
+            "Warp spawn_follow_up called with session_id={}, but session forking is not yet supported",
+            session_id
+        );
         Err(ExecutorError::FollowUpNotSupported(
             "Warp agent does not support session forking yet".to_string(),
         ))
     }
 
-    fn normalize_logs(&self, msg_store: Arc<MsgStore>, _current_dir: &Path) {
+    fn normalize_logs(&self, msg_store: Arc<MsgStore>, current_dir: &Path) {
+        tracing::debug!("Normalizing Warp logs for directory: {:?}", current_dir);
         let entry_index_provider = EntryIndexProvider::start_from(&msg_store);
 
         // For now, use basic stderr normalization
         // TODO: Add JSON parsing if output_format is json
         normalize_stderr_logs(msg_store, entry_index_provider);
+        tracing::debug!("Warp log normalization complete");
     }
 
     fn default_mcp_config_path(&self) -> Option<std::path::PathBuf> {
@@ -158,13 +180,17 @@ impl StandardCodingAgentExecutor for Warp {
     }
 
     fn get_availability_info(&self) -> AvailabilityInfo {
+        tracing::debug!("Checking Warp CLI availability");
         // Check if warp CLI is installed by trying to run it
         if let Ok(output) = std::process::Command::new("warp").arg("--version").output() {
             if output.status.success() {
+                let version = String::from_utf8_lossy(&output.stdout);
+                tracing::info!("Warp CLI found: {}", version.trim());
                 return AvailabilityInfo::InstallationFound;
             }
         }
 
+        tracing::warn!("Warp CLI not found in PATH");
         AvailabilityInfo::NotFound
     }
 }
