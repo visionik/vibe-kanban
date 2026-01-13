@@ -1,0 +1,86 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "properties": {
+    "append_prompt": {
+      "title": "Append Prompt",
+      "description": "Extra text appended to the prompt",
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "textarea",
+      "default": null
+    },
+    "ambient": {
+      "title": "Ambient Mode",
+      "description": "Run agent remotely using run-ambient instead of local run",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "model": {
+      "title": "Model",
+      "description": "Override the base model used by the agent",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "profile": {
+      "title": "Profile",
+      "description": "ID of the profile the agent will run as",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "environment": {
+      "title": "Environment",
+      "description": "Cloud environment to use (for ambient mode)",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "output_format": {
+      "title": "Output Format",
+      "description": "Output format: json, pretty, or text",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "base_command_override": {
+      "title": "Base Command Override",
+      "description": "Override the base command with a custom command",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "additional_params": {
+      "title": "Additional Parameters",
+      "description": "Additional parameters to append to the base command",
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "env": {
+      "title": "Environment Variables",
+      "description": "Environment variables to set when running the executor",
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": {
+        "type": "string"
+      }
+    }
+  },
+  "type": "object"
+}

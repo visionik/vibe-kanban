@@ -21,7 +21,7 @@ use crate::{
     env::ExecutionEnv,
     executors::{
         amp::Amp, claude::ClaudeCode, codex::Codex, copilot::Copilot, cursor::CursorAgent,
-        droid::Droid, gemini::Gemini, opencode::Opencode, qwen::QwenCode,
+        droid::Droid, gemini::Gemini, opencode::Opencode, qwen::QwenCode, warp::Warp,
     },
     mcp_config::McpConfig,
 };
@@ -38,6 +38,7 @@ pub mod opencode;
 #[cfg(feature = "qa-mode")]
 pub mod qa_mock;
 pub mod qwen;
+pub mod warp;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -104,6 +105,7 @@ pub enum CodingAgent {
     QwenCode,
     Copilot,
     Droid,
+    Warp,
     #[cfg(feature = "qa-mode")]
     QaMock(QaMockExecutor),
 }
@@ -173,6 +175,7 @@ impl CodingAgent {
             ],
             Self::CursorAgent(_) => vec![BaseAgentCapability::SetupHelper],
             Self::Copilot(_) => vec![],
+            Self::Warp(_) => vec![], // Warp doesn't support SessionFork yet
             #[cfg(feature = "qa-mode")]
             Self::QaMock(_) => vec![], // QA mock doesn't need special capabilities
         }
