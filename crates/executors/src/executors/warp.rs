@@ -70,9 +70,9 @@ impl Warp {
             "warp agent run"
         };
 
-        let mut builder = CommandBuilder::new(base_cmd).params(["--prompt"]);
+        let mut builder = CommandBuilder::new(base_cmd);
 
-        // Add optional parameters
+        // Add optional parameters BEFORE --prompt
         if let Some(model) = &self.model {
             builder = builder.extend_params(["--model", model]);
         }
@@ -91,6 +91,9 @@ impl Warp {
             // Default to JSON for easier parsing
             builder = builder.extend_params(["--output-format", "json"]);
         }
+
+        // Add --prompt flag at the END (required by Warp CLI)
+        builder = builder.extend_params(["--prompt"]);
 
         apply_overrides(builder, &self.cmd)
     }
