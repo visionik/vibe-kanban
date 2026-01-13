@@ -14,6 +14,7 @@ use crate::{
     executors::{
         AppendPrompt, AvailabilityInfo, ExecutorError, SpawnedChild,
         StandardCodingAgentExecutor,
+        claude::{ClaudeLogProcessor, HistoryStrategy},
     },
     logs::{stderr_processor::normalize_stderr_logs, utils::EntryIndexProvider},
 };
@@ -168,8 +169,16 @@ impl StandardCodingAgentExecutor for Warp {
         tracing::debug!("Normalizing Warp logs for directory: {:?}", current_dir);
         let entry_index_provider = EntryIndexProvider::start_from(&msg_store);
 
-        // For now, use basic stderr normalization
-        // TODO: Add JSON parsing if output_format is json
+        // Process stdout logs (Warp's JSON output) using Claude's log processor
+        // Warp outputs JSON similar to Claude, so we can reuse the same processor
+        ClaudeLogProcessor::process_logs(
+            msg_store.clone(),
+            current_dir,
+            entry_index_provider.clone(),
+            HistoryStrategy::Default,
+        );
+
+        // Process stderr logs using the standard stderr processor
         normalize_stderr_logs(msg_store, entry_index_provider);
         tracing::debug!("Warp log normalization complete");
     }

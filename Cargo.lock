@@ -1813,6 +1813,7 @@ dependencies = [
  "strip-ansi-escapes",
  "strum",
  "strum_macros",
+ "tempfile",
  "thiserror 2.0.17",
  "tokio",
  "tokio-stream",
