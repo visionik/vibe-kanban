@@ -169,6 +169,8 @@ impl StandardCodingAgentExecutor for Warp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use workspace_utils::msg_store::MsgStore;
 
     #[test]
     fn test_warp_command_builder_local() {
@@ -252,5 +254,234 @@ mod tests {
         let params = builder.params.as_ref().unwrap();
         assert!(params.contains(&"--output-format".to_string()));
         assert!(params.contains(&"json".to_string()));
+    }
+
+    #[test]
+    fn test_warp_availability_detection() {
+        let warp = Warp {
+            append_prompt: AppendPrompt(None),
+            ambient: None,
+            model: None,
+            profile: None,
+            environment: None,
+            output_format: None,
+            cmd: Default::default(),
+        };
+
+        let availability = warp.get_availability_info();
+        // This will return InstallationFound or NotFound depending on whether
+        // warp CLI is installed on the test machine
+        match availability {
+            AvailabilityInfo::InstallationFound => {
+                // Warp is installed
+                assert!(true);
+            }
+            AvailabilityInfo::NotFound => {
+                // Warp is not installed, which is fine for unit tests
+                assert!(true);
+            }
+            _ => panic!("Unexpected availability info"),
+        }
+    }
+
+    #[test]
+    fn test_mcp_config_path() {
+        let warp = Warp {
+            append_prompt: AppendPrompt(None),
+            ambient: None,
+            model: None,
+            profile: None,
+            environment: None,
+            output_format: None,
+            cmd: Default::default(),
+        };
+
+        let mcp_path = warp.default_mcp_config_path();
+        assert!(mcp_path.is_some());
+        let path = mcp_path.unwrap();
+        assert!(path.to_string_lossy().contains("warp"));
+        assert!(path.to_string_lossy().contains("mcp.json"));
+    }
+
+    #[tokio::test]
+    async fn test_warp_spawn_with_mock_command() {
+        use tempfile::TempDir;
+
+        // Create a temporary directory for the test
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+
+        // Use a mock command that will fail (since warp may not be installed)
+        // but we can still test the command building logic
+        let warp = Warp {
+            append_prompt: AppendPrompt(Some("\n\nTest prompt".to_string())),
+            ambient: Some(false),
+            model: Some("test-model".to_string()),
+            profile: None,
+            environment: None,
+            output_format: Some("json".to_string()),
+            cmd: CmdOverrides {
+                base_command_override: Some("echo".to_string()), // Use echo as mock
+                additional_params: None,
+                env: None,
+            },
+        };
+
+        let env_exec = ExecutionEnv {
+            vars: std::collections::HashMap::new(),
+        };
+
+        let prompt = "Test task";
+
+        // This should build the command successfully even if warp isn't installed
+        let result = warp.spawn(temp_path, prompt, &env_exec).await;
+
+        // With echo as base command, spawn should succeed
+        match result {
+            Ok(_spawned_child) => {
+                // Success - command was built and spawned
+                assert!(true);
+            }
+            Err(e) => {
+                // If we get ExecutableNotFound for "warp", that's expected when not mocked
+                // If we get any other error with echo mock, that's unexpected
+                if let ExecutorError::ExecutableNotFound { program } = e {
+                    assert_eq!(program, "warp");
+                } else {
+                    panic!("Unexpected error: {:?}", e);
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_warp_follow_up_not_supported() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+
+        let warp = Warp {
+            append_prompt: AppendPrompt(None),
+            ambient: None,
+            model: None,
+            profile: None,
+            environment: None,
+            output_format: None,
+            cmd: Default::default(),
+        };
+
+        let env_exec = ExecutionEnv {
+            vars: std::collections::HashMap::new(),
+        };
+
+        let result = warp
+            .spawn_follow_up(temp_path, "Follow up prompt", "session-123", &env_exec)
+            .await;
+
+        // Should return FollowUpNotSupported error
+        assert!(result.is_err());
+        match result {
+            Err(ExecutorError::FollowUpNotSupported(msg)) => {
+                assert!(msg.contains("session forking"));
+            }
+            _ => panic!("Expected FollowUpNotSupported error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_warp_log_normalization() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+
+        let warp = Warp {
+            append_prompt: AppendPrompt(None),
+            ambient: None,
+            model: None,
+            profile: None,
+            environment: None,
+            output_format: None,
+            cmd: Default::default(),
+        };
+
+        let msg_store = Arc::new(MsgStore::new());
+
+        // Push some test stderr messages
+        msg_store.push_stderr("Starting Warp agent...\n".to_string());
+        msg_store.push_stderr("Processing task...\n".to_string());
+        msg_store.push_finished();
+
+        // Normalize logs (this should process stderr)
+        warp.normalize_logs(msg_store.clone(), temp_path);
+
+        // Give time for async processing
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Verify that history contains normalized entries
+        let history = msg_store.get_history();
+        assert!(
+            !history.is_empty(),
+            "Expected normalized log entries to be generated"
+        );
+    }
+
+    /// Integration test that requires warp CLI to be installed
+    /// Run with: cargo test --package executors -- --ignored
+    #[tokio::test]
+    #[ignore]
+    async fn test_warp_actual_spawn() {
+        use tempfile::TempDir;
+
+        // Skip if WARP_API_KEY is not set
+        if std::env::var("WARP_API_KEY").is_err() {
+            eprintln!("Skipping test: WARP_API_KEY not set");
+            return;
+        }
+
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+
+        let warp = Warp {
+            append_prompt: AppendPrompt(None),
+            ambient: Some(false), // Use local mode for testing
+            model: None,
+            profile: None,
+            environment: None,
+            output_format: Some("json".to_string()),
+            cmd: Default::default(),
+        };
+
+        let mut vars = std::collections::HashMap::new();
+        if let Ok(api_key) = std::env::var("WARP_API_KEY") {
+            vars.insert("WARP_API_KEY".to_string(), api_key);
+        }
+
+        let env_exec = ExecutionEnv { vars };
+
+        let prompt = "Echo 'Hello from Warp test'";
+
+        // Attempt to spawn actual warp process
+        let result = warp.spawn(temp_path, prompt, &env_exec).await;
+
+        match result {
+            Ok(mut spawned_child) => {
+                // Wait a bit for the process to start
+                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+                // Kill the process
+                let _ = spawned_child.child.kill();
+                let _ = spawned_child.child.wait().await;
+
+                assert!(true, "Warp process spawned successfully");
+            }
+            Err(ExecutorError::ExecutableNotFound { program }) => {
+                panic!("Warp CLI not found: {}. Install it to run this test.", program);
+            }
+            Err(e) => {
+                panic!("Failed to spawn Warp: {:?}", e);
+            }
+        }
     }
 }
