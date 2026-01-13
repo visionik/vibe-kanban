@@ -70,7 +70,7 @@ impl Warp {
             "warp agent run"
         };
 
-        let mut builder = CommandBuilder::new(base_cmd).params(["-p"]);
+        let mut builder = CommandBuilder::new(base_cmd).params(["--prompt"]);
 
         // Add optional parameters
         if let Some(model) = &self.model {
@@ -118,7 +118,7 @@ impl StandardCodingAgentExecutor for Warp {
             .stderr(std::process::Stdio::piped())
             .current_dir(current_dir)
             .args(&args)
-            .arg(&combined_prompt);
+            .arg(&combined_prompt); // -p flag is already in args, this is the prompt value
 
         env.clone()
             .with_profile(&self.cmd)
