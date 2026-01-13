@@ -330,6 +330,11 @@
           "model": "glm-4.6"
         }
       }
+    },
+    "WARP": {
+      "DEFAULT": {
+        "WARP": {}
+      }
     }
   }
 }
