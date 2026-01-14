@@ -188,12 +188,15 @@ impl StandardCodingAgentExecutor for Warp {
 
     fn get_availability_info(&self) -> AvailabilityInfo {
         tracing::debug!("Checking Warp CLI availability");
-        // Check if warp CLI is installed by trying to run it
-        if let Ok(output) = std::process::Command::new("warp").arg("--version").output() {
+        // Check if warp CLI is installed by trying to get help output
+        if let Ok(output) = std::process::Command::new("warp").arg("--help").output() {
             if output.status.success() {
-                let version = String::from_utf8_lossy(&output.stdout);
-                tracing::info!("Warp CLI found: {}", version.trim());
-                return AvailabilityInfo::InstallationFound;
+                let help_text = String::from_utf8_lossy(&output.stdout);
+                // Verify it's the Warp CLI by checking for "agent" command
+                if help_text.contains("agent") {
+                    tracing::info!("Warp CLI found and available");
+                    return AvailabilityInfo::InstallationFound;
+                }
             }
         }
 
