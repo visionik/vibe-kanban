@@ -191,7 +191,35 @@ impl WarpLogProcessor {
                 let tool_name = tool.clone();
                 let content = if tool == "run_command" {
                     command.as_deref().unwrap_or("<command>").to_string()
+                } else if tool == "read_files" {
+                    // Extract file paths from the data
+                    if let Some(files) = data.get("files").and_then(|v| v.as_array()) {
+                        let paths: Vec<String> = files
+                            .iter()
+                            .filter_map(|f| f.get("path").and_then(|p| p.as_str()))
+                            .map(|p| {
+                                // Show just the filename or last 2 path components for readability
+                                let parts: Vec<&str> = p.rsplitn(3, '/').collect();
+                                if parts.len() >= 2 {
+                                    format!("{}/{}", parts[1], parts[0])
+                                } else {
+                                    parts[0].to_string()
+                                }
+                            })
+                            .collect();
+                        
+                        if paths.is_empty() {
+                            "read_files".to_string()
+                        } else if paths.len() == 1 {
+                            paths[0].clone()
+                        } else {
+                            format!("{} files: {}", paths.len(), paths.join(", "))
+                        }
+                    } else {
+                        "read_files".to_string()
+                    }
                 } else {
+                    // For other tools, show a compact representation
                     format!("{}", serde_json::to_string_pretty(data).unwrap_or_default())
                 };
 
