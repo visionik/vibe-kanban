@@ -1,4 +1,4 @@
-use std::{path::Path, sync::Arc};
+use std::{collections::HashMap, path::Path, sync::Arc};
 
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -9,6 +9,15 @@ use crate::logs::{
     ActionType, CommandExitStatus, CommandRunResult, NormalizedEntry, NormalizedEntryType,
     ToolResult, ToolResultValueType, ToolStatus,
 };
+
+/// Information about a tool call, stored for later update when result arrives
+#[derive(Clone)]
+struct ToolCallInfo {
+    entry_index: usize,
+    tool_name: String,
+    content: String,
+    data: serde_json::Value,
+}
 
 /// Warp-specific JSON message types
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -46,9 +55,18 @@ pub enum WarpJson {
     },
 }
 
-pub struct WarpLogProcessor;
+pub struct WarpLogProcessor {
+    // Map tool_name -> info for tracking tool calls until results arrive
+    tool_map: HashMap<String, ToolCallInfo>,
+}
 
 impl WarpLogProcessor {
+    fn new() -> Self {
+        Self {
+            tool_map: HashMap::new(),
+        }
+    }
+
     /// Process raw logs and convert them to normalized entries
     pub fn process_logs(
         msg_store: Arc<MsgStore>,
@@ -59,6 +77,7 @@ impl WarpLogProcessor {
             let mut stream = msg_store.history_plus_stream();
             let mut buffer = String::new();
             let mut session_id_extracted = false;
+            let mut processor = Self::new();
 
             while let Some(Ok(msg)) = stream.next().await {
                 let chunk = match msg {
@@ -94,8 +113,8 @@ impl WarpLogProcessor {
                                 }
                             }
 
-                            let patch = Self::normalize_entry(&warp_json, &entry_index_provider);
-                            if let Some(patch) = patch {
+                            let patches = processor.normalize_entry(&warp_json, &entry_index_provider);
+                            for patch in patches {
                                 msg_store.push_patch(patch);
                             }
                         }
@@ -147,9 +166,12 @@ impl WarpLogProcessor {
     }
 
     fn normalize_entry(
+        &mut self,
         warp_json: &WarpJson,
         entry_index_provider: &EntryIndexProvider,
-    ) -> Option<json_patch::Patch> {
+    ) -> Vec<json_patch::Patch> {
+        let mut patches = Vec::new();
+        
         match warp_json {
             WarpJson::System { event_type, .. } => {
                 let content = match event_type.as_deref() {
@@ -168,7 +190,7 @@ impl WarpLogProcessor {
                 };
 
                 let idx = entry_index_provider.next();
-                Some(ConversationPatch::add_normalized_entry(idx, entry))
+                patches.push(ConversationPatch::add_normalized_entry(idx, entry));
             }
             WarpJson::Agent { text, .. } => {
                 if let Some(text) = text {
@@ -182,9 +204,7 @@ impl WarpLogProcessor {
                     };
 
                     let idx = entry_index_provider.next();
-                    Some(ConversationPatch::add_normalized_entry(idx, entry))
-                } else {
-                    None
+                    patches.push(ConversationPatch::add_normalized_entry(idx, entry));
                 }
             }
             WarpJson::ToolCall { tool, command, data } => {
@@ -241,14 +261,26 @@ impl WarpLogProcessor {
                         },
                         status: ToolStatus::Created,
                     },
-                    content,
+                    content: content.clone(),
                     metadata: Some(
                         serde_json::to_value(warp_json).unwrap_or(serde_json::Value::Null),
                     ),
                 };
 
                 let idx = entry_index_provider.next();
-                Some(ConversationPatch::add_normalized_entry(idx, entry))
+                
+                // Store tool call info for later update when result arrives
+                self.tool_map.insert(
+                    tool_name.clone(),
+                    ToolCallInfo {
+                        entry_index: idx,
+                        tool_name: tool_name.clone(),
+                        content,
+                        data: data.clone(),
+                    },
+                );
+                
+                patches.push(ConversationPatch::add_normalized_entry(idx, entry));
             }
             WarpJson::ToolResult {
                 tool,
@@ -260,65 +292,62 @@ impl WarpLogProcessor {
                 let tool_name = tool.clone();
                 let is_error = status.as_deref() != Some("complete");
 
-                let entry = if tool == "run_command" {
-                    let result = CommandRunResult {
-                        exit_status: exit_code.map(|code| CommandExitStatus::ExitCode { code }),
-                        output: output.clone(),
+                // Look up the original tool call info
+                if let Some(info) = self.tool_map.get(&tool_name).cloned() {
+                    let entry = if tool == "run_command" {
+                        let result = CommandRunResult {
+                            exit_status: exit_code.map(|code| CommandExitStatus::ExitCode { code }),
+                            output: output.clone(),
+                        };
+
+                        NormalizedEntry {
+                            timestamp: None,
+                            entry_type: NormalizedEntryType::ToolUse {
+                                tool_name: tool_name.clone(),
+                                action_type: ActionType::CommandRun {
+                                    command: info.content.clone(),
+                                    result: Some(result),
+                                },
+                                status: if is_error {
+                                    ToolStatus::Failed
+                                } else {
+                                    ToolStatus::Success
+                                },
+                            },
+                            content: info.content,
+                            metadata: None,
+                        }
+                    } else {
+                        NormalizedEntry {
+                            timestamp: None,
+                            entry_type: NormalizedEntryType::ToolUse {
+                                tool_name: tool_name.clone(),
+                                action_type: ActionType::Tool {
+                                    tool_name: tool_name.clone(),
+                                    arguments: Some(info.data.clone()),
+                                    result: Some(ToolResult {
+                                        r#type: ToolResultValueType::Json,
+                                        value: data.clone(),
+                                    }),
+                                },
+                                status: if is_error {
+                                    ToolStatus::Failed
+                                } else {
+                                    ToolStatus::Success
+                                },
+                            },
+                            content: info.content,
+                            metadata: None,
+                        }
                     };
 
-                    // Try to get command from data (flattened fields) or use a placeholder
-                    let command = data
-                        .get("command")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("<command>")
-                        .to_string();
-
-                    NormalizedEntry {
-                        timestamp: None,
-                        entry_type: NormalizedEntryType::ToolUse {
-                            tool_name: tool_name.clone(),
-                            action_type: ActionType::CommandRun {
-                                command: command.clone(),
-                                result: Some(result),
-                            },
-                            status: if is_error {
-                                ToolStatus::Failed
-                            } else {
-                                ToolStatus::Success
-                            },
-                        },
-                        content: command,
-                        metadata: None,
-                    }
-                } else {
-                    let content = format!("{}", serde_json::to_string_pretty(data).unwrap_or_default());
-                    
-                    NormalizedEntry {
-                        timestamp: None,
-                        entry_type: NormalizedEntryType::ToolUse {
-                            tool_name: tool_name.clone(),
-                            action_type: ActionType::Tool {
-                                tool_name: tool_name.clone(),
-                                arguments: Some(data.clone()),
-                                result: Some(ToolResult {
-                                    r#type: ToolResultValueType::Json,
-                                    value: data.clone(),
-                                }),
-                            },
-                            status: if is_error {
-                                ToolStatus::Failed
-                            } else {
-                                ToolStatus::Success
-                            },
-                        },
-                        content,
-                        metadata: None,
-                    }
-                };
-
-                let idx = entry_index_provider.next();
-                Some(ConversationPatch::add_normalized_entry(idx, entry))
+                    // Replace the existing entry at the same index
+                    patches.push(ConversationPatch::replace(info.entry_index, entry));
+                }
+                // If no matching tool call found, ignore the result (shouldn't happen)
             }
         }
+        
+        patches
     }
 }
