@@ -39,6 +39,7 @@ pub mod opencode;
 pub mod qa_mock;
 pub mod qwen;
 pub mod warp;
+mod warp_log_processor;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
