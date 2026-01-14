@@ -460,12 +460,9 @@ impl ClaudeLogProcessor {
         match claude_json {
             ClaudeJson::System { .. } => None, // session might not have been initialized yet
             ClaudeJson::Assistant { session_id, .. } => session_id.clone(),
-            ClaudeJson::WarpAgent { conversation_id, .. } => conversation_id.clone(),
             ClaudeJson::User { session_id, .. } => session_id.clone(),
             ClaudeJson::ToolUse { session_id, .. } => session_id.clone(),
-            ClaudeJson::WarpToolCall { .. } => None, // Warp tool calls don't have session_id
             ClaudeJson::ToolResult { session_id, .. } => session_id.clone(),
-            ClaudeJson::WarpToolResult { .. } => None, // Warp tool results don't have session_id
             ClaudeJson::Result { session_id, .. } => session_id.clone(),
             ClaudeJson::StreamEvent { .. } => None, // session might not have been initialized yet
             ClaudeJson::ApprovalResponse { .. } => None,
@@ -883,22 +880,6 @@ impl ClaudeLogProcessor {
                     }
                 }
             }
-            ClaudeJson::WarpAgent { text, .. } => {
-                // Handle Warp's simpler agent message format
-                if let Some(text) = text {
-                    
-                    let entry = NormalizedEntry {
-                        timestamp: None,
-                        entry_type: NormalizedEntryType::AssistantMessage,
-                        content: text.clone(),
-                        metadata: Some(
-                            serde_json::to_value(claude_json).unwrap_or(serde_json::Value::Null),
-                        ),
-                    };
-                    let idx = entry_index_provider.next();
-                    patches.push(ConversationPatch::add_normalized_entry(idx, entry));
-                }
-            }
             ClaudeJson::User { message, .. } => {
                 if matches!(self.strategy, HistoryStrategy::AmpResume)
                     && message
@@ -1087,96 +1068,6 @@ impl ClaudeLogProcessor {
             }
             ClaudeJson::ToolResult { .. } => {
                 // Add proper ToolResult support to NormalizedEntry when the type system supports it
-            }
-            ClaudeJson::WarpToolCall { tool, data } => {
-                // Handle Warp's tool_call messages
-                let tool_name = tool.clone();
-                let content = if tool == "run_command" {
-                    data.get("command")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("<command>")
-                        .to_string()
-                } else {
-                    format!("{}: {}", tool, serde_json::to_string(data).unwrap_or_default())
-                };
-
-                let entry = NormalizedEntry {
-                    timestamp: None,
-                    entry_type: NormalizedEntryType::ToolUse {
-                        tool_name: tool_name.clone(),
-                        action_type: if tool == "run_command" {
-                            ActionType::CommandRun {
-                                command: content.clone(),
-                                result: None,
-                            }
-                        } else {
-                            ActionType::Tool {
-                                tool_name: tool_name.clone(),
-                                arguments: Some(data.clone()),
-                                result: None,
-                            }
-                        },
-                        status: ToolStatus::Created,
-                    },
-                    content,
-                    metadata: Some(
-                        serde_json::to_value(claude_json).unwrap_or(serde_json::Value::Null),
-                    ),
-                };
-                let idx = entry_index_provider.next();
-                patches.push(ConversationPatch::add_normalized_entry(idx, entry));
-            }
-            ClaudeJson::WarpToolResult { tool, status, exit_code, output, data } => {
-                // Handle Warp's tool_result messages
-                let tool_name = tool.clone();
-                let is_error = status.as_deref() != Some("complete");
-                
-                let entry = if tool == "run_command" {
-                    let result = crate::logs::CommandRunResult {
-                        exit_status: exit_code.map(|code| crate::logs::CommandExitStatus::ExitCode { code }),
-                        output: output.clone(),
-                    };
-                    
-                    let command = data.get("command")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("<command>")
-                        .to_string();
-                    
-                    NormalizedEntry {
-                        timestamp: None,
-                        entry_type: NormalizedEntryType::ToolUse {
-                            tool_name: tool_name.clone(),
-                            action_type: ActionType::CommandRun {
-                                command: command.clone(),
-                                result: Some(result),
-                            },
-                            status: if is_error { ToolStatus::Failed } else { ToolStatus::Success },
-                        },
-                        content: command,
-                        metadata: None,
-                    }
-                } else {
-                    NormalizedEntry {
-                        timestamp: None,
-                        entry_type: NormalizedEntryType::ToolUse {
-                            tool_name: tool_name.clone(),
-                            action_type: ActionType::Tool {
-                                tool_name: tool_name.clone(),
-                                arguments: Some(data.clone()),
-                                result: Some(crate::logs::ToolResult {
-                                    r#type: crate::logs::ToolResultValueType::Json,
-                                    value: data.clone(),
-                                }),
-                            },
-                            status: if is_error { ToolStatus::Failed } else { ToolStatus::Success },
-                        },
-                        content: format!("{}: {}", tool, serde_json::to_string(data).unwrap_or_default()),
-                        metadata: None,
-                    }
-                };
-                
-                let idx = entry_index_provider.next();
-                patches.push(ConversationPatch::add_normalized_entry(idx, entry));
             }
             ClaudeJson::StreamEvent { event, .. } => match event {
                 ClaudeStreamEvent::MessageStart { message } => {
@@ -1576,16 +1467,6 @@ pub enum ClaudeJson {
         message: ClaudeMessage,
         session_id: Option<String>,
     },
-    // Warp's simpler agent message format
-    #[serde(rename = "agent")]
-    WarpAgent {
-        #[serde(default)]
-        text: Option<String>,
-        #[serde(default)]
-        session_id: Option<String>,
-        #[serde(default)]
-        conversation_id: Option<String>,
-    },
     User {
         message: ClaudeMessage,
         session_id: Option<String>,
@@ -1596,30 +1477,10 @@ pub enum ClaudeJson {
         tool_data: ClaudeToolData,
         session_id: Option<String>,
     },
-    // Warp's tool_call format (different field names)
-    #[serde(rename = "tool_call")]
-    WarpToolCall {
-        tool: String,
-        #[serde(flatten)]
-        data: serde_json::Value,
-    },
     ToolResult {
         result: serde_json::Value,
         is_error: Option<bool>,
         session_id: Option<String>,
-    },
-    // Warp's tool_result format
-    #[serde(rename = "tool_result")]
-    WarpToolResult {
-        tool: String,
-        #[serde(default)]
-        status: Option<String>,
-        #[serde(default)]
-        exit_code: Option<i32>,
-        #[serde(default)]
-        output: Option<String>,
-        #[serde(flatten)]
-        data: serde_json::Value,
     },
     StreamEvent {
         event: ClaudeStreamEvent,
@@ -1687,7 +1548,7 @@ pub enum ClaudeContentItem {
     Text { text: String },
     #[serde(rename = "thinking")]
     Thinking { thinking: String },
-    #[serde(rename = "tool_use", alias = "tool_call")]
+    #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
         #[serde(flatten)]
