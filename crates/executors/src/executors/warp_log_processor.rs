@@ -28,6 +28,8 @@ pub enum WarpJson {
     },
     ToolCall {
         tool: String,
+        #[serde(default)]
+        command: Option<String>,
         #[serde(flatten)]
         data: serde_json::Value,
     },
@@ -185,13 +187,10 @@ impl WarpLogProcessor {
                     None
                 }
             }
-            WarpJson::ToolCall { tool, data } => {
+            WarpJson::ToolCall { tool, command, data } => {
                 let tool_name = tool.clone();
                 let content = if tool == "run_command" {
-                    data.get("command")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("<command>")
-                        .to_string()
+                    command.as_deref().unwrap_or("<command>").to_string()
                 } else {
                     format!("{}", serde_json::to_string_pretty(data).unwrap_or_default())
                 };
@@ -239,6 +238,7 @@ impl WarpLogProcessor {
                         output: output.clone(),
                     };
 
+                    // Try to get command from data (flattened fields) or use a placeholder
                     let command = data
                         .get("command")
                         .and_then(|v| v.as_str())
